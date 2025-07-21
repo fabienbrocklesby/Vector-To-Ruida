@@ -1,5 +1,11 @@
-#! /usr/bin/python3
-#
+#!/usr/bin/env python3
+import sys
+import math
+import xml.etree.ElementTree as ET  # stdlib XML parser
+from svg.path import parse_path, Line, Move, Arc, CubicBezier, QuadraticBezier  # SVG path parser & segments
+
+# --- Start of code from src/ruida.py ---
+
 # (c) 2017 Patrick Himmelmann et.al.
 # 2017-05-21
 #
@@ -39,7 +45,7 @@
 #     v1.6 -- encode_byte() encode_color() added.
 #             multi layer support in header() and body() done.
 
-import sys, re, math, copy
+import re, copy
 
 # python2 has a completely useless alias bytes = str. Fix this:
 if sys.version_info.major < 3:
@@ -644,76 +650,94 @@ class Ruida():
     l = map(lambda x: int(x, base=16), str.split())     # locale.atoi() is to be avoided!
     return bytes(l)
 
+# --- End of code from src/ruida.py ---
 
-if __name__ == '__main__':
-  def hexdumpb(data):
-    "Convenience hexdumper for bytes (or str), compatible with both python2 and python3"
-    return ["%02x"%(ord(b) if type(b) == str else b) for b in data]
+SVG_NS = {"svg": "http://www.w3.org/2000/svg"}
 
-  rd = Ruida()
-  data = b'\xe7\x51' + rd.encode_number(452.84) + rd.encode_number(126.8)
-  print("Bottom_Right_E7_51 452.84mm 126.8mm          e7 51 00 00 1b 51 68 00 00 07 5e 50 ")
-  print("Bottom_Right_E7_51 452.84mm 126.8mm          "+" ".join(hexdumpb(data)))
+def extract_paths(root):
+    vb = root.get("viewBox").split()
+    _, _, w, h = map(float, vb)           # viewBox→width,height
+    scale = 50.0 / max(w, h)              # fit into 50 mm box
+    ox = (50 - w*scale)/2
+    oy = (50 - h*scale)/2
 
-  data = b'\xc6\x31\x00' + rd.encode_percent(60)
-  print("Laser_1_Min_Pow_C6_31 Layer:0 0%             c6 31 00 4c 65")
-  print("Laser_1_Min_Pow_C6_31 Layer:0 0%             "+" ".join(hexdumpb(data)))
+    all_paths = []
 
-  data = b'\xc6\x32\x00' + rd.encode_percent(70)
-  print("Laser_1_Max_Pow_C6_32 Layer:0 0%             c6 32 00 59 4c")
-  print("Laser_1_Max_Pow_C6_32 Layer:0 0%             "+" ".join(hexdumpb(data)))
+    # 1) <path> elements
+    for p in root.findall(".//svg:path", SVG_NS):
+        d = p.get("d")
+        segs = parse_path(d)               # returns Move, Line, CubicBezier, etc.
+        pts = []
+        for seg in segs:
+            # sample lines and moves at just endpoints, curves & arcs at high resolution
+            if isinstance(seg, (Line, Move)):
+                ts = [0.0, 1.0]
+            else:
+                ts = [i/100.0 for i in range(101)]
+            for t in ts:
+                z = seg.point(t)
+                x, y = z.real, z.imag
+                mx = x*scale + ox
+                my = (h - y)*scale + oy   # flip Y-axis
+                pts.append([mx, my])
+        all_paths.append(pts)
 
-  data = b'\xa9' + rd.encode_relcoord(-8.191) + rd.encode_relcoord(8.191)
-  print("Cut_Rel -8.191mm 8.191mm                     a9 40 01 3f 7f")
-  print("Cut_Rel -8.191mm 8.191mm                     "+" ".join(hexdumpb(data)))
+    # 2) <rect> elements → four-point polygons
+    for r in root.findall(".//svg:rect", SVG_NS):
+        x, y = float(r.get("x")), float(r.get("y"))
+        w_, h_ = float(r.get("width")), float(r.get("height"))
+        corners = [(x,y), (x+w_,y), (x+w_,y+h_), (x,y+h_), (x,y)]
+        pts = [[cx*scale+ox, (h - cy)*scale+oy] for cx, cy in corners]
+        all_paths.append(pts)
 
-  data = b'\x89' + rd.encode_relcoord(4.0) + rd.encode_relcoord(-4.0)
-  print("Mov_Rel 4.0mm -4.0mm                         89 1f 20 60 60")
-  print("Mov_Rel 4.0mm -4.0mm                         "+" ".join(hexdumpb(data)))
+    # 3) <circle> & <ellipse> → sampled points
+    for c in root.findall(".//svg:circle", SVG_NS):
+        cx, cy, r_ = map(float, (c.get("cx"), c.get("cy"), c.get("r")))
+        pts = []
+        for i in range(0, 36):
+            θ = 2*math.pi*i/36
+            x = cx + r_*math.cos(θ)
+            y = cy + r_*math.sin(θ)
+            pts.append([x*scale+ox, (h - y)*scale+oy])
+        all_paths.append(pts)
+    for e in root.findall(".//svg:ellipse", SVG_NS):
+        cx, cy = float(e.get("cx")), float(e.get("cy"))
+        rx, ry = float(e.get("rx")), float(e.get("ry"))
+        pts = []
+        for i in range(0, 36):
+            θ = 2*math.pi*i/36
+            x = cx + rx*math.cos(θ)
+            y = cy + ry*math.sin(θ)
+            pts.append([x*scale+ox, (h - y)*scale+oy])
+        all_paths.append(pts)
 
+    # 4) <line>, <polyline>, <polygon>
+    for tag in ("line","polyline","polygon"):
+        for el in root.findall(f".//svg:{tag}", SVG_NS):
+            coords = el.get("points") or ""
+            pts = []
+            for pair in coords.strip().split():
+                px, py = pair.split(",")
+                x, y = float(px), float(py)
+                pts.append([x*scale+ox, (h - y)*scale+oy])
+            if tag=="polygon":
+                pts.append(pts[0])
+            all_paths.append(pts)
 
-  rd = Ruida()
-  # rd.set(speed=30, power=[40,70])             # cut 4mm plywood
-  rd.set(speed=100, power=[10,15])              # mark
-  paths=[
-        [[0,0], [50,0], [50,50], [0,50], [0,0]],
-        [[12,10], [38,25], [12,40], [12,10]],
-        [[16,6], [10,6], [13,3], [16, 6]]
-      ]
-  mvpath = rd.paths2moves(paths)
-  mvbbox = rd.bbox2moves(rd.boundingbox(paths))
+    return all_paths
 
-  mvbbox_cmp = [
-        [[0,0]], [[50,0]], [[50,50]], [[0,50]], [[0,0]],
-      ]
-  mvpath_cmp = [
-        [[0,0]], [[50,0]], [[50,50]], [[0,50]], [[0,0]],
-        [[12,10]], [[38,25]], [[12,40]], [[12,10]],
-        [[16,6]], [[10,6]], [[13,3]], [[16, 6]]
-      ]
-  print("bbox comparison: ", mvbbox_cmp)
-  print("rd.bbox2moves(): ", mvbbox)
+def svg_to_rd(svg_file, rd_file):
+    tree = ET.parse(svg_file)
+    root = tree.getroot()
+    paths = extract_paths(root)
+    layer = RuidaLayer(paths=paths, speed=30, power=[50,70], bbox=[[0,0],[50,50]])
+    rd = Ruida(layers=[layer])
+    with open(rd_file, "wb") as f:
+        rd.write(f)
+    print(f"Wrote {rd_file}")
 
-  print("mvpath comparison: ", mvpath_cmp)
-  print("rd.paths2moves():  ", mvpath)
-
-  ###################################################
-  print("Test Mark+Cut")
-  paths_list_cut=[
-        [[0,0], [50,0], [50,50], [0,50], [0,0]]
-        ]
-  paths_list_mark=[
-        [[12,10], [38,25], [12,40], [12,10]],
-        [[16,6], [10,6], [13,3], [16, 6]],
-        [[60,6], [54,6], [57,3], [60, 6]]
-      ]
-
-  rd = Ruida()
-  rd.set(nlayers=2)
-  rd.set(layer=0, color=[0,255,0], speed=100, power=[10,18], paths=paths_list_mark)
-  rd.set(layer=1, color=[255,0,0], speed=30,  power=[40,70], paths=paths_list_cut)
-
-  with open(sys.argv[1], 'wb') as fd:
-    rd.write(fd)
-    print(sys.argv[1] + ".rd: odometer: ", rd._odo)
-
+if __name__=="__main__":
+    if len(sys.argv)!=3:
+        print("Usage: svg2rd.py input.svg output.rd")
+        sys.exit(1)
+    svg_to_rd(sys.argv[1], sys.argv[2])
