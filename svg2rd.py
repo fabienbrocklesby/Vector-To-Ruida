@@ -3,6 +3,9 @@ import sys
 import math
 import xml.etree.ElementTree as ET  # stdlib XML parser
 from svg.path import parse_path, Line, Move, Arc, CubicBezier, QuadraticBezier  # SVG path parser & segments
+import os
+import subprocess
+import re
 
 # --- Start of code from src/ruida.py ---
 
@@ -654,82 +657,201 @@ class Ruida():
 
 SVG_NS = {"svg": "http://www.w3.org/2000/svg"}
 
-def extract_paths(root):
-    vb = root.get("viewBox").split()
-    _, _, w, h = map(float, vb)           # viewBox→width,height
-    scale = 50.0 / max(w, h)              # fit into 50 mm box
-    ox = (50 - w*scale)/2
-    oy = (50 - h*scale)/2
+def parse_transform(transform_str):
+    """Parses an SVG transform string to get scale and translate values."""
+    sx, sy, tx, ty = 1.0, 1.0, 0.0, 0.0
+    if not transform_str:
+        return sx, sy, tx, ty
 
-    all_paths = []
+    # This is a simplified parser for "scale(...) translate(...)" or matrix forms.
+    scale_match = re.search(r'scale\(([^,)]+)(?:,([^)]+))?\)', transform_str)
+    if scale_match:
+        sx = float(scale_match.group(1))
+        sy = float(scale_match.group(2)) if scale_match.group(2) else sx
+
+    translate_match = re.search(r'translate\(([^,)]+)(?:,([^)]+))?\)', transform_str)
+    if translate_match:
+        tx = float(translate_match.group(1))
+        ty = float(translate_match.group(2)) if translate_match.group(2) else 0.0
+        
+    matrix_match = re.search(r'matrix\(([^,)]+),([^,)]+),([^,)]+),([^,)]+),([^,)]+),([^,)]+)\)', transform_str)
+    if matrix_match:
+        sx = float(matrix_match.group(1))
+        # Ignoring skew factors matrix_match.group(2) and matrix_match.group(3)
+        sy = float(matrix_match.group(4))
+        tx = float(matrix_match.group(5))
+        ty = float(matrix_match.group(6))
+
+    return sx, sy, tx, ty
+
+def extract_paths_recursive(element, parent_transform, global_scale, global_ox, global_oy, h):
+    """Recursively extracts paths, applying transformations."""
+    paths = []
+    
+    # Get transform for the current element and combine with parent's
+    local_transform_str = element.get("transform", "")
+    lsx, lsy, ltx, lty = parse_transform(local_transform_str)
+    
+    psx, psy, ptx, pty = parent_transform
+    # Combine transforms: new_T = parent_T * local_T
+    # Simplified for scale/translate:
+    csx, csy = psx * lsx, psy * lsy
+    ctx, cty = psx * ltx + ptx, psy * lty + pty
 
     # 1) <path> elements
-    for p in root.findall(".//svg:path", SVG_NS):
+    for p in element.findall("./svg:path", SVG_NS):
         d = p.get("d")
-        segs = parse_path(d)               # returns Move, Line, CubicBezier, etc.
-        pts = []
+        if not d: continue
+        
+        current_path = []
+        segs = parse_path(d)
         for seg in segs:
-            # sample lines and moves at just endpoints, curves & arcs at high resolution
+            # If we have a Move command, and the current path is not empty,
+            # save the current path and start a new one. This handles disjointed paths.
+            if isinstance(seg, Move) and current_path:
+                paths.append(current_path)
+                current_path = []
+
             if isinstance(seg, (Line, Move)):
-                ts = [0.0, 1.0]
+                ts = [0.0, 1.0] if isinstance(seg, Line) else [1.0]
             else:
                 ts = [i/100.0 for i in range(101)]
+
             for t in ts:
                 z = seg.point(t)
                 x, y = z.real, z.imag
-                mx = x*scale + ox
-                my = (h - y)*scale + oy   # flip Y-axis
-                pts.append([mx, my])
-        all_paths.append(pts)
+                
+                # Apply combined local transform
+                x = x * csx + ctx
+                y = y * csy + cty
+                
+                # Apply global transform for final positioning
+                mx = x * global_scale + global_ox
+                my = (h - y) * global_scale + global_oy
+                current_path.append([mx, my])
+        
+        if current_path:
+            paths.append(current_path)
 
-    # 2) <rect> elements → four-point polygons
-    for r in root.findall(".//svg:rect", SVG_NS):
-        x, y = float(r.get("x")), float(r.get("y"))
-        w_, h_ = float(r.get("width")), float(r.get("height"))
+    # 2) <rect> elements
+    for r in element.findall("./svg:rect", SVG_NS):
+        x, y = float(r.get("x", 0)), float(r.get("y", 0))
+        w_, h_ = float(r.get("width", 0)), float(r.get("height", 0))
         corners = [(x,y), (x+w_,y), (x+w_,y+h_), (x,y+h_), (x,y)]
-        pts = [[cx*scale+ox, (h - cy)*scale+oy] for cx, cy in corners]
-        all_paths.append(pts)
+        pts = []
+        for cx, cy in corners:
+            cx_t = cx * csx + ctx
+            cy_t = cy * csy + cty
+            pts.append([cx_t * global_scale + global_ox, (h - cy_t) * global_scale + global_oy])
+        paths.append(pts)
 
-    # 3) <circle> & <ellipse> → sampled points
-    for c in root.findall(".//svg:circle", SVG_NS):
-        cx, cy, r_ = map(float, (c.get("cx"), c.get("cy"), c.get("r")))
+    # 3) <circle> & <ellipse> elements
+    for c in element.findall("./svg:circle", SVG_NS):
+        cx, cy, r_ = float(c.get("cx", 0)), float(c.get("cy", 0)), float(c.get("r", 0))
         pts = []
-        for i in range(0, 36):
-            θ = 2*math.pi*i/36
-            x = cx + r_*math.cos(θ)
-            y = cy + r_*math.sin(θ)
-            pts.append([x*scale+ox, (h - y)*scale+oy])
-        all_paths.append(pts)
-    for e in root.findall(".//svg:ellipse", SVG_NS):
-        cx, cy = float(e.get("cx")), float(e.get("cy"))
-        rx, ry = float(e.get("rx")), float(e.get("ry"))
+        # Sample points on the circle's circumference
+        for i in range(37): # 37 points to close the loop
+            theta = 2 * math.pi * i / 36
+            x, y = cx + r_ * math.cos(theta), cy + r_ * math.sin(theta)
+            x_t, y_t = x * csx + ctx, y * csy + cty
+            pts.append([x_t * global_scale + global_ox, (h - y_t) * global_scale + global_oy])
+        paths.append(pts)
+
+    for e in element.findall("./svg:ellipse", SVG_NS):
+        cx, cy = float(e.get("cx", 0)), float(e.get("cy", 0))
+        rx, ry = float(e.get("rx", 0)), float(e.get("ry", 0))
         pts = []
-        for i in range(0, 36):
-            θ = 2*math.pi*i/36
-            x = cx + rx*math.cos(θ)
-            y = cy + ry*math.sin(θ)
-            pts.append([x*scale+ox, (h - y)*scale+oy])
-        all_paths.append(pts)
+        for i in range(37):
+            theta = 2 * math.pi * i / 36
+            x, y = cx + rx * math.cos(theta), cy + ry * math.sin(theta)
+            x_t, y_t = x * csx + ctx, y * csy + cty
+            pts.append([x_t * global_scale + global_ox, (h - y_t) * global_scale + global_oy])
+        paths.append(pts)
 
     # 4) <line>, <polyline>, <polygon>
-    for tag in ("line","polyline","polygon"):
-        for el in root.findall(f".//svg:{tag}", SVG_NS):
-            coords = el.get("points") or ""
-            pts = []
-            for pair in coords.strip().split():
-                px, py = pair.split(",")
-                x, y = float(px), float(py)
-                pts.append([x*scale+ox, (h - y)*scale+oy])
-            if tag=="polygon":
-                pts.append(pts[0])
-            all_paths.append(pts)
+    for line in element.findall("./svg:line", SVG_NS):
+        x1, y1 = float(line.get("x1", 0)), float(line.get("y1", 0))
+        x2, y2 = float(line.get("x2", 0)), float(line.get("y2", 0))
+        pts = []
+        for x, y in [(x1, y1), (x2, y2)]:
+            x_t, y_t = x * csx + ctx, y * csy + cty
+            pts.append([x_t * global_scale + global_ox, (h - y_t) * global_scale + global_oy])
+        paths.append(pts)
 
-    return all_paths
+    for poly in element.findall("./svg:polyline", SVG_NS):
+        points_str = poly.get("points", "").strip()
+        if not points_str: continue
+        pairs = points_str.split()
+        pts = []
+        for pair in pairs:
+            try:
+                x, y = map(float, pair.split(','))
+                x_t, y_t = x * csx + ctx, y * csy + cty
+                pts.append([x_t * global_scale + global_ox, (h - y_t) * global_scale + global_oy])
+            except ValueError:
+                continue # Skip malformed pairs
+        if pts:
+            paths.append(pts)
+
+    for poly in element.findall("./svg:polygon", SVG_NS):
+        points_str = poly.get("points", "").strip()
+        if not points_str: continue
+        pairs = points_str.split()
+        pts = []
+        for pair in pairs:
+            try:
+                x, y = map(float, pair.split(','))
+                x_t, y_t = x * csx + ctx, y * csy + cty
+                pts.append([x_t * global_scale + global_ox, (h - y_t) * global_scale + global_oy])
+            except ValueError:
+                continue
+        if pts:
+            pts.append(pts[0]) # Close the polygon
+            paths.append(pts)
+
+    # Recurse into <g> elements
+    for g in element.findall("./svg:g", SVG_NS):
+        paths.extend(extract_paths_recursive(g, (csx, csy, ctx, cty), global_scale, global_ox, global_oy, h))
+        
+    return paths
+
+def extract_paths(root):
+    vb_str = root.get("viewBox")
+    if not vb_str:
+        # Fallback for SVGs without a viewBox (e.g. from potrace)
+        w_str = root.get("width")
+        h_str = root.get("height")
+        if not w_str or not h_str:
+             raise ValueError("SVG has no viewBox, width, or height attributes.")
+        w = float(re.sub(r'[^\d.]', '', w_str))
+        h = float(re.sub(r'[^\d.]', '', h_str))
+    else:
+        vb = vb_str.split()
+        _, _, w, h = map(float, vb)
+
+    scale = 50.0 / max(w, h)
+    ox = (50 - w * scale) / 2
+    oy = (50 - h * scale) / 2
+
+    # Start recursion with an identity transform
+    initial_transform = (1.0, 1.0, 0.0, 0.0)
+    return extract_paths_recursive(root, initial_transform, scale, ox, oy, h)
 
 def svg_to_rd(svg_file, rd_file):
-    tree = ET.parse(svg_file)
+    try:
+        tree = ET.parse(svg_file)
+    except ET.ParseError as e:
+        print(f"Error parsing SVG file: {svg_file}")
+        print(f"Please check if it's a valid XML file. Error: {e}")
+        return
+        
     root = tree.getroot()
     paths = extract_paths(root)
+    
+    if not paths:
+        print("Warning: No vector paths found in the SVG. The output file will be empty.")
+        return
+
     layer = RuidaLayer(paths=paths, speed=30, power=[50,70], bbox=[[0,0],[50,50]])
     rd = Ruida(layers=[layer])
     with open(rd_file, "wb") as f:
@@ -740,4 +862,22 @@ if __name__=="__main__":
     if len(sys.argv)!=3:
         print("Usage: svg2rd.py input.svg output.rd")
         sys.exit(1)
-    svg_to_rd(sys.argv[1], sys.argv[2])
+
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+
+    if input_file.lower().endswith(".pdf"):
+        log_dir = "logs/converted"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        base_name = os.path.basename(input_file)
+        svg_file = os.path.join(log_dir, os.path.splitext(base_name)[0] + ".svg")
+        
+        subprocess.run(
+            [sys.executable, "pdf2svg.py", input_file, svg_file], 
+            check=True
+        )
+        svg_to_rd(svg_file, output_file)
+    else:
+        svg_to_rd(input_file, output_file)
