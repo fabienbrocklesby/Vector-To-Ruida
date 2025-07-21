@@ -860,7 +860,7 @@ def svg_to_rd(svg_file, rd_file):
 
 if __name__=="__main__":
     if len(sys.argv)!=3:
-        print("Usage: svg2rd.py input.svg output.rd")
+        print("Usage: svg2rd.py input.[svg|pdf|dxf] output.rd")
         sys.exit(1)
 
     input_file = sys.argv[1]
@@ -876,6 +876,19 @@ if __name__=="__main__":
         
         subprocess.run(
             [sys.executable, "pdf2svg.py", input_file, svg_file], 
+            check=True
+        )
+        svg_to_rd(svg_file, output_file)
+    elif input_file.lower().endswith(".dxf"):
+        log_dir = "logs/converted"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        base_name = os.path.basename(input_file)
+        svg_file = os.path.join(log_dir, os.path.splitext(base_name)[0] + ".svg")
+        
+        subprocess.run(
+            [sys.executable, "dxf2svg.py", input_file, svg_file], 
             check=True
         )
         svg_to_rd(svg_file, output_file)
