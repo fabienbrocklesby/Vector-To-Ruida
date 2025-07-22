@@ -1,3 +1,5 @@
 svg.path
 PyMuPDF
 Pillow
+svgwrite
+numpy
