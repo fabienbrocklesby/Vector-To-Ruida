@@ -10,7 +10,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('input_file', help='Path to the input file (DXF, PDF, PNG, JPG, SVG).')
-    parser.add_argument('output_file', nargs='?', help='Path to the output .rd file. Defaults to input file with .rd extension.')
+    parser.add_argument('--output_file', '-o', help='Path to the output .rd file. Defaults to input file with .rd extension.')
 
     # SVG to RD specific arguments
     parser.add_argument('--min_power', type=float, default=10.0, help='[SVG->RD] Laser power for the lightest shade.')
@@ -18,8 +18,8 @@ def main():
     parser.add_argument('--speed', type=float, default=300.0, help='[SVG->RD] Engraving speed (mm/s).')
 
     # Image to SVG specific arguments
-    parser.add_argument('--num_colors', type=int, default=16, help='[IMG->SVG] Number of colors to quantize the image to.')
-    parser.add_argument('--min_area', type=int, default=10, help='[IMG->SVG] Minimum area of a colored region to be vectorized.')
+    parser.add_argument('--num_colors', type=int, default=16, help='[IMG->SVG] Number of shades to quantize the image to.')
+    parser.add_argument('--img_scale', type=float, default=0.5, help='[IMG->SVG] Factor by which to scale the image before processing.')
 
     args = parser.parse_args()
 
@@ -49,7 +49,7 @@ def main():
         elif ext in ['.png', '.jpg', '.jpeg']:
             print(f"Converting Image to SVG...")
             temp_svg_path = os.path.splitext(input_path)[0] + "_temp.svg"
-            img2svg.image_to_svg(input_path, temp_svg_path, args.num_colors, args.min_area)
+            img2svg.image_to_svg_grayscale(input_path, temp_svg_path, args.num_colors, args.img_scale)
             svg_input = temp_svg_path
         elif ext == '.svg':
             svg_input = input_path

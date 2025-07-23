@@ -49,7 +49,14 @@ def image_to_svg_grayscale(image_path, svg_path, num_shades=5, scale_factor=1.0)
     img_quantized = img_gray.quantize(colors=num_shades)
     # Get the palette and convert it to a list of gray values
     palette = img_quantized.getpalette()
-    gray_values = [palette[i*3] for i in range(num_shades)]
+    
+    if not palette:
+        logging.error("Could not get palette from quantized image.")
+        return
+
+    # The actual number of shades might be less than requested
+    num_actual_shades = len(palette) // 3
+    gray_values = [palette[i*3] for i in range(num_actual_shades)]
 
     width, height = img_quantized.size
     logging.info(f"Image dimensions: {width}x{height}")
@@ -85,7 +92,7 @@ def image_to_svg_grayscale(image_path, svg_path, num_shades=5, scale_factor=1.0)
 
             for start, end in zip(starts, ends):
                 # Add 0.5 to y for crisp rendering
-                path_data.append(f"M{start},{y + 0.5} h{end - start}")
+                path_data.append(f"M{start},{y + 0.5}h{end - start}")
         
         if path_data:
             dwg_paths[gray_value] = " ".join(path_data)
