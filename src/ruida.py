@@ -179,7 +179,11 @@ class Ruida():
     if not self._odo:
       if self._layers:
         for l in self._layers:
-          self.odoAdd(self.odometer(l._paths))
+          if l._paths:  # Only calculate odometer if layer has paths
+            self.odoAdd(self.odometer(l._paths))
+      # If no valid paths were found, initialize with zero distances
+      if self._odo is None:
+        self._odo = [0.0, 0.0]
     if not self._trailer: self._trailer = self.trailer(self._odo)
 
     if not self._header:  raise ValueError("header(_bbox,_speed,_power,_freq) not initialized")
@@ -449,6 +453,12 @@ class Ruida():
     bbox = self._globalbbox
     for l in layers:
       bbox = self.bbox_combine(bbox, l._bbox)
+    
+    # Handle case where no valid bounding box is found
+    if bbox is None:
+      # Use a default bounding box of 50x50mm centered at origin
+      bbox = [[0, 0], [50, 50]]
+    
     (xmin, ymin) = bbox[0]
     (xmax, ymax) = bbox[1]
 

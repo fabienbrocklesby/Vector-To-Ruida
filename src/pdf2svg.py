@@ -1,7 +1,6 @@
 import fitz  # PyMuPDF
 import sys
 import os
-import subprocess
 import io
 from PIL import Image
 
@@ -77,11 +76,9 @@ def convert_pdf_to_svg(pdf_path, svg_path):
             img = Image.open(io.BytesIO(image_bytes))
             img.save(temp_bmp_path, "BMP")
             
-            # Use the new img2svg.py script to vectorize the BMP
-            subprocess.run(
-                [sys.executable, "img2svg.py", temp_bmp_path, svg_path],
-                check=True
-            )
+            # Use the img2svg module to vectorize the BMP
+            from . import img2svg
+            img2svg.image_to_svg_grayscale(temp_bmp_path, svg_path, num_shades=2, scale_factor=1.0)
         finally:
             # Clean up the temporary image file
             if os.path.exists(temp_bmp_path):

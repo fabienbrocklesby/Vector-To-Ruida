@@ -8,12 +8,6 @@ import time
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def image_to_svg_grayscale(image_path, svg_path, num_shades=5, scale_factor=1.0):
-    """
-    Converts a raster image to a multi-toned SVG file.
-    - Quantizes the image into a specific number of grayscale shades.
-    - Creates a separate, optimized path for each shade.
-    - Allows downscaling to reduce final file size and complexity.
-    """
     try:
         logging.info(f"Opening image: {image_path}")
         img = Image.open(image_path)

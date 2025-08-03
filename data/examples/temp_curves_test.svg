@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Quadratic Bézier -->
+  <path d="M10,50 Q50,10 90,50" fill="none" stroke="red" stroke-width="2"/>
+  <!-- Arc -->
+  <path d="M20,80 A20,20 0 0,1 80,80" fill="none" stroke="blue" stroke-width="2"/>
+</svg>
